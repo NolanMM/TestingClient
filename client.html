@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>LiveKit Consumer</title>
+    <script src="https://unpkg.com/livekit-client/dist/livekit-client.umd.js"></script>
+    <style>
+        .video-container { display: flex; flex-wrap: wrap; gap: 10px; }
+        video { width: 640px; height: 360px; background: #000; }
+        .participant { border: 2px solid #333; padding: 10px; }
+        .label { color: white; background: #333; padding: 5px; }
+        #status { padding: 10px; margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+    <h2>LiveKit Consumer</h2>
+    <div id="status">Connecting...</div>
+    <div id="videos" class="video-container"></div>
+
+    <script>
+        const TOKEN_SERVER = 'http://rustsuite.nolanm.com';
+        const ROOM_NAME = 'stream-room';
+        const CONSUMER_ID = `web-consumer-${Date.now()}`;
+
+        async function getToken(identity, room) {
+            const res = await fetch(`${TOKEN_SERVER}/api/token`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    identity, room,
+                    canPublish: false,
+                    canSubscribe: true,
+                    canPublishData: false,
+                    name: identity
+                })
+            });
+            const json = await res.json();
+            // Handle both wrapped {data: {token, liveKitUrl}} and unwrapped {token, liveKitUrl}
+            return json.data || json;
+        }
+
+        async function main() {
+            const statusEl = document.getElementById('status');
+            
+            try {
+                const { token, liveKitUrl } = await getToken(CONSUMER_ID, ROOM_NAME);
+                console.log('Token received, liveKitUrl:', liveKitUrl);
+                
+                // Force ws:// and 127.0.0.1
+                let wsUrl = liveKitUrl
+                    .replace('http://', 'ws://')
+                    .replace('https://', 'wss://')
+                    .replace('localhost', '127.0.0.1');
+                
+                console.log('Connecting to:', wsUrl);
+                statusEl.textContent = `Connecting to ${wsUrl}...`;
+
+                const room = new LivekitClient.Room({
+                    adaptiveStream: true,
+                    dynacast: true,
+                });
+
+                room.on(LivekitClient.RoomEvent.Connected, () => {
+                    console.log('Connected to room');
+                    statusEl.textContent = `Connected as ${room.localParticipant.identity}. Waiting for video...`;
+                });
+
+                room.on(LivekitClient.RoomEvent.TrackSubscribed, (track, pub, participant) => {
+                    console.log(`Subscribed to ${track.kind} from ${participant.identity}`);
+                    if (track.kind === 'video') {
+                        statusEl.textContent = `Receiving video from ${participant.identity}`;
+                        const div = document.createElement('div');
+                        div.className = 'participant';
+                        div.id = `participant-${participant.identity}`;
+                        div.innerHTML = `<div class="label">${participant.identity}</div>`;
+                        const video = track.attach();
+                        video.autoplay = true;
+                        video.playsInline = true;
+                        div.appendChild(video);
+                        document.getElementById('videos').appendChild(div);
+                    }
+                });
+
+                room.on(LivekitClient.RoomEvent.TrackUnsubscribed, (track, pub, participant) => {
+                    track.detach().forEach(el => el.remove());
+                    const div = document.getElementById(`participant-${participant.identity}`);
+                    if (div) div.remove();
+                });
+
+                room.on(LivekitClient.RoomEvent.Disconnected, (reason) => {
+                    console.log('Disconnected:', reason);
+                    statusEl.textContent = `Disconnected: ${reason}`;
+                });
+
+                room.on(LivekitClient.RoomEvent.ParticipantConnected, (participant) => {
+                    console.log('Participant joined:', participant.identity);
+                });
+
+                await room.connect(wsUrl, token);
+                console.log(`Connected as ${room.localParticipant.identity}`);
+                
+            } catch (err) {
+                console.error('Connection error:', err);
+                statusEl.textContent = `Error: ${err.message}`;
+            }
+        }
+
+        main();
+    </script>
+</body>
+</html>
